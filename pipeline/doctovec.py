@@ -32,7 +32,7 @@ import sys
 import string
 import itertools as it
 import operator as op
-
+import os
 import nltk.corpus
 from nltk.tokenize import RegexpTokenizer
 import numpy

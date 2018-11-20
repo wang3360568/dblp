@@ -113,10 +113,97 @@ class BuildPaperCitationGraph(YearFilterableTask):
         refg.write_graphmlz(self.graphml_output_file.path)
         return refg
 
+class BuildPaperCitationGraph_directed(YearFilterableTask):
+
+    def requires(self):
+        # TODO: consider using single dependency on FilterPapersToYearRange
+        return (filtering.FilteredCSVPapers(self.start, self.end),
+                filtering.FilteredCSVRefs(self.start, self.end),
+                filtering.FilterAuthorshipsToYearRange(self.start, self.end))
+
+    @property
+    def papers_file(self):
+        return self.input()[0]
+
+    @property
+    def refs_file(self):
+        return self.input()[1]
+
+    @property
+    def author_file(self):
+        return self.input()[2]
+
+    @property
+    def base_paths(self):
+        return ('paper-citation-graph.pickle.gz',
+                'paper-citation-graph.graphml.gz',
+                'paper-id-to-node-id-map.csv')
+
+    @property
+    def pickle_output_file(self):
+        return self.output()[0]
+
+    @property
+    def graphml_output_file(self):
+        return self.output()[1]
+
+    @property
+    def idmap_output_file(self):
+        return self.output()[2]
+
+    def read_paper_vertices(self):
+        """Iterate through paper IDs from the paper csv file."""
+        with self.papers_file.open() as papers_file:
+            papers_df = pd.read_csv(papers_file, header=0, usecols=(0,))
+            return papers_df['id'].values
+
+    def read_paper_venues(self):
+        """Iterate through (paper_id, venue) pairs from the paper csv file."""
+        for record in util.iter_csv_fwrapper(self.papers_file):
+            yield (record[0], record[2])
+
+    def read_paper_references(self, idmap):
+        """Filter out references to papers outside dataset."""
+        for paper_id, ref_id in util.iter_csv_fwrapper(self.refs_file):
+            try: yield (idmap[paper_id], idmap[ref_id])
+            except: pass
+
+    def run(self):
+        refg = igraph.Graph(directed=True)
+        nodes = self.read_paper_vertices()
+        refg.add_vertices(nodes)
+
+        # Build and save paper id to node id mapping
+        idmap = {str(v['name']): v.index for v in refg.vs}
+        rows = sorted(idmap.items())
+        util.write_csv_to_fwrapper(
+            self.idmap_output_file, ('paper_id', 'node_id'), rows)
+
+        # Now add venues to nodes as paper attributes
+        for paper_id, venue in self.read_paper_venues():
+            node_id = idmap[paper_id]
+            refg.vs[node_id]['venue'] = venue
+
+        # next add author ids
+        for v in refg.vs:
+            v['author_ids'] = []
+
+        for author_id, paper_id in util.iter_csv_fwrapper(self.author_file):
+            node_id = idmap[paper_id]
+            refg.vs[node_id]['author_ids'].append(author_id)
+
+        # Finally add edges from citation records
+        citation_links = self.read_paper_references(idmap)
+        refg.add_edges(citation_links)
+
+        # Save in both pickle and graphml formats
+        refg.write_picklez(self.pickle_output_file.path)
+        refg.write_graphmlz(self.graphml_output_file.path)
+        return refg
 
 class PickledPaperCitationGraph(YearFilterableTask):
     def requires(self):
-        return BuildPaperCitationGraph(self.start, self.end)
+        return BuildPaperCitationGraph_directed(self.start, self.end)
 
     def output(self):
         pickle_file = self.input()[0]
@@ -125,7 +212,7 @@ class PickledPaperCitationGraph(YearFilterableTask):
 
 class PaperCitationGraphIdmap(YearFilterableTask):
     def requires(self):
-        return BuildPaperCitationGraph(self.start, self.end)
+        return BuildPaperCitationGraph_directed(self.start, self.end)
 
     def output(self):
         idmap_file = self.input()[2]
@@ -206,12 +293,86 @@ class BuildAuthorCitationGraph(YearFilterableTask):
         util.write_csv_to_fwrapper(
             idmap_output_file, ('author_id', 'node_id'), rows)
 
+class BuildAuthorCitationGraph_directed(YearFilterableTask):
+    """Build the author citation graph from the paper citation graph and the
+    authorship csv records.
+    """
+
+    def requires(self):
+        return (filtering.FilterAuthorshipsToYearRange(self.start, self.end),
+                PaperCitationGraphIdmap(self.start, self.end),
+                PickledPaperCitationGraph(self.start, self.end))
+
+    @property
+    def author_file(self):
+        return self.input()[0]
+
+    @property
+    def paper_idmap_file(self):
+        return self.input()[1]
+
+    @property
+    def paper_graph_file(self):
+        return self.input()[2]
+
+    @property
+    def base_paths(self):
+        return ('author-citation-graph.graphml.gz',
+                'author-id-to-node-id-map.csv')
+
+    def read_author_ids(self):
+        """Read author ids from author file and return as strings (for easy
+        reference when adding edges).
+        """
+        with self.author_file.open() as f:
+            df = pd.read_csv(f, header=0, usecols=(0,))
+            return df['author_id'].astype(str).values
+
+    def get_edges(self):
+        """Return all edges from a file in which each line contains an (author,
+        paper) pair."""
+        records = util.iter_csv_fwrapper(self.paper_idmap_file)
+        idmap = {record[0]: int(record[1]) for record in records}
+        refg = igraph.Graph.Read_Picklez(self.paper_graph_file.open())
+        records = util.iter_csv_fwrapper(self.author_file)
+        rows = ((refg, idmap[paper_id], author_id)
+                for author_id, paper_id in records)
+
+        while True:
+            edges = self.get_paper_edges(*rows.next())
+            for edge in edges:
+                yield edge
+
+    def get_paper_edges(self, refg, paper_id, author_id):
+        """Return a list of author-to-author edges for each paper."""
+        node = refg.vs[paper_id]
+        neighbors = node.neighbors()
+        author_lists = [n['author_ids'] for n in neighbors]#a list of lists (author_ids)
+        if not author_lists: return []
+        authors = reduce(lambda x,y: x+y, author_lists)#cobine the list of lists to one list
+        return zip([author_id]*len(authors), authors)
+
+    def run(self):
+        nodes = self.read_author_ids()
+        edges = self.get_edges()
+        authorg = util.build_directed_graph(nodes, edges)#changed
+
+        # Now write the graph to gzipped graphml file.
+        graph_output_file, idmap_output_file = self.output()
+        authorg.write_graphmlz(graph_output_file.path)
+
+        # Finally, build and save the ID map.
+        idmap = {v['name']: v.index for v in authorg.vs}
+        rows = sorted(idmap.items())
+        util.write_csv_to_fwrapper(
+            idmap_output_file, ('author_id', 'node_id'), rows)
+
 
 class WriteLCCAuthorCitationGraph(YearFilterableTask):
     """Find the largest connected component in the author citation graph."""
 
     def requires(self):
-        return BuildAuthorCitationGraph(self.start, self.end)
+        return BuildAuthorCitationGraph_directed(self.start, self.end)
 
     @property
     def base_paths(self):

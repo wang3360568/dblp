@@ -167,6 +167,15 @@ def build_undirected_graph(nodes, edges):
     graph.simplify()
     return graph
 
+def build_directed_graph(nodes, edges):
+    """Build an directed graph, combine duplicates edges by a summation of weights."""
+    graph = igraph.Graph(directed=True)
+    graph.add_vertices(nodes)
+    graph.add_edges(edges)
+    graph.es['weight']=[1]*len(edges)
+    graph.simplify(combine_edges='sum')
+    return graph
+
 
 def flatten(struct):
     """
