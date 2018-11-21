@@ -46,13 +46,12 @@ NO_STOPWORDS_FILE_ERROR = -11
 try:
     # This is a more efficient implementation of the Porter Stemmer,
     # available on PyPi.
-    from porterstemmer import Stemmer
-    stem_word = Stemmer()
+    from stemming.porter2 import stem
 except ImportError:
     # Fall back to the slower stemmer available from NLTK
     try:
         from nltk import PorterStemmer
-        stem_word = PorterStemmer().stem_word
+        stem_word  = PorterStemmer().stem
     except ImportError:
         # You're out of luck; in practice, we should never get here because the
         # import from nltk.tokenize above should throw an ImportError first.
@@ -73,7 +72,7 @@ TRANSLATION_TABLE = {ord(c): None for c in PUNCTUATION}
 # STOPWORDS = set(nltk.corpus.stopwords.words('english'))
 # but I had to expand on it to include contractions
 # this list includes all nltk stopwords plus contractions plus a few extras
-STOPWORDS_FILE = os.path.join(__curdir, 'stopwords.txt')
+STOPWORDS_FILE = os.path.join(os.path.curdir, 'stopwords.txt')
 try:
     with open(STOPWORDS_FILE) as f:
         STOPWORDS = set(f.read().split())
