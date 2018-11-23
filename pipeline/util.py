@@ -172,7 +172,7 @@ def build_directed_graph(nodes, edges):
     graph = igraph.Graph(directed=True)
     graph.add_vertices(nodes)
     graph.add_edges(edges)
-    graph.es['weight']=[1]*len(edges)
+    graph.es['weight']=[1]*graph.ecount()
     graph.simplify(combine_edges='sum')
     return graph
 
